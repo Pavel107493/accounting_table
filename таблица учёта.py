@@ -1,46 +1,41 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import json
 import copy
+import os
+import sys
 
 class ScrollableTable(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         
-        # Фрейм заголовков (фиксирован по вертикали, прокручивается по горизонтали)
         self.header_frame = tk.Frame(self)
         self.header_frame.pack(side=tk.TOP, fill=tk.X)
         
-        # Горизонтальный скроллбар для заголовков
         self.h_scroll_header = tk.Scrollbar(self.header_frame, orient=tk.HORIZONTAL)
         self.h_scroll_header.pack(side=tk.BOTTOM, fill=tk.X)
         
-        # Канвас для заголовков
         self.header_canvas = tk.Canvas(self.header_frame, height=50,
-                                       xscrollcommand=self.h_scroll_header.set)
+                                      xscrollcommand=self.h_scroll_header.set)
         self.header_canvas.pack(side=tk.TOP, fill=tk.X, expand=True)
         self.h_scroll_header.config(command=self.header_canvas.xview)
         
         self.header_inner = tk.Frame(self.header_canvas)
         self.header_window = self.header_canvas.create_window((0,0), window=self.header_inner, anchor='nw')
-        
         self.header_inner.bind("<Configure>", lambda e: self.header_canvas.configure(scrollregion=self.header_canvas.bbox("all")))
         
-        # Фрейм с таблицей и скроллами
         self.table_frame = tk.Frame(self)
         self.table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
-        # Вертикальный и горизонтальный скроллбары для таблицы
         self.v_scroll = tk.Scrollbar(self.table_frame, orient=tk.VERTICAL)
         self.v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
         self.h_scroll = tk.Scrollbar(self.table_frame, orient=tk.HORIZONTAL)
         self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         
-        # Канвас для таблицы
         self.table_canvas = tk.Canvas(self.table_frame,
-                                      yscrollcommand=self.v_scroll.set,
-                                      xscrollcommand=self.h_scroll.set)
+                                     yscrollcommand=self.v_scroll.set,
+                                     xscrollcommand=self.h_scroll.set)
         self.table_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.v_scroll.config(command=self.table_canvas.yview)
@@ -52,7 +47,6 @@ class ScrollableTable(tk.Frame):
         self.table_inner.bind("<Configure>", self.on_table_configure)
         self.table_canvas.bind("<Configure>", self.on_canvas_configure)
         
-        # Синхронизируем горизонтальный скроллбар заголовков и таблицы
         self.header_canvas.config(xscrollcommand=self.sync_scroll_x)
         self.table_canvas.config(xscrollcommand=self.sync_scroll_x)
         self.h_scroll.config(command=self.sync_scrollbar)
@@ -81,15 +75,16 @@ class ScrollableTable(tk.Frame):
         self.header_canvas.itemconfig(self.header_window, width=event.width)
 
 class JournalApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, init_file=None):
         super().__init__()
         self.title("Таблица учёта продукции на уголковой линии")
-        self.geometry("360x600")
+        self.geometry("450x220")
 
+        # Попытка загрузить иконку из упакованного exe (сделано для Windows + pyinstaller)
         try:
-            self.iconbitmap('favicon.ico')
-        except Exception as e:
-            print(f"Не удалось установить иконку: {e}")
+            self.iconbitmap(sys.executable)
+        except Exception:
+            pass
         
         self.data_rows = 1
         self.columns = []
@@ -97,82 +92,122 @@ class JournalApp(tk.Tk):
         self.undo_stack = []
         self.redo_stack = []
         self.max_undo = 50
+        
         self.current_file = None
+        self.unsaved_changes = False
         
         # Меню
         menubar = tk.Menu(self)
+        
         filemenu = tk.Menu(menubar, tearoff=0)
         filemenu.add_command(label="Сохранить как...", command=self.save_to_file)
-        filemenu.add_command(label="Загрузить", command=self.load_from_file)
+        filemenu.add_command(label="Открыть файл", command=self.load_from_file)
         menubar.add_cascade(label="Файл", menu=filemenu)
         
         editmenu = tk.Menu(menubar, tearoff=0)
-        editmenu.add_command(label="Отменить (Ctrl+Z)", command=self.undo_action)
-        editmenu.add_command(label="Вернуть (Ctrl+Y)", command=self.redo_action)
+        editmenu.add_command(label="Отменить", command=self.undo_action)
+        editmenu.add_command(label="Вернуть", command=self.redo_action)
         menubar.add_cascade(label="Правка", menu=editmenu)
+        
+        name_menu = tk.Menu(menubar, tearoff=0)
+        name_menu.add_command(label="Импортировать из директории", command=self.import_columns_from_directory)
+        menubar.add_cascade(label="Маркировки", menu=name_menu)
+        
+        # Новое меню "О программе"
+        about_menu = tk.Menu(menubar, tearoff=0)
+        about_menu.add_command(label="Сведения", command=self.show_about_info)
+        menubar.add_cascade(label="О программе", menu=about_menu)
         
         self.config(menu=menubar)
         
-        # Верхняя панель с кнопками (отдельно, вне прокрутки)
-        self.top_buttons_frame = tk.Frame(self)
-        self.top_buttons_frame.pack(side=tk.TOP, fill=tk.X)
+        top_frame = ttk.Frame(self)
+        top_frame.pack(side=tk.TOP, fill=tk.X)
         
-        self.add_col_btn = tk.Button(self.top_buttons_frame, text="Добавить столбец", command=self.add_column)
-        self.add_col_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        self.add_col_btn = ttk.Button(top_frame, text="Добавить столбец", command=self.add_column)
+        self.add_col_btn.pack(side=tk.LEFT, padx=5, pady=6)
         
-        self.quick_save_btn = tk.Button(self.top_buttons_frame, text="Быстрое сохранение", command=self.quick_save)
-        self.quick_save_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        self.quick_save_btn = ttk.Button(top_frame, text="Быстрое сохранение", command=self.quick_save)
+        self.quick_save_btn.pack(side=tk.LEFT, padx=5, pady=6)
         
-        # Прокручиваемая таблица
         self.scrollable_table = ScrollableTable(self)
         self.scrollable_table.pack(fill=tk.BOTH, expand=True)
         
-        # Кнопка "Добавить строку" снизу (вне прокрутки)
-        self.add_row_btn = tk.Button(self, text="Добавить строку", command=self.add_row)
-        self.add_row_btn.pack(side=tk.BOTTOM, pady=5)
-        
         self.del_row_buttons = []
+        self.add_row_btn = None
         
         for _ in range(3):
-            self.add_column()
+            self.add_column(init=True)
         self.refresh_delete_row_buttons()
         
         self.bind_all("<Control-z>", lambda e: self.undo_action())
         self.bind_all("<Control-y>", lambda e: self.redo_action())
         
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        if init_file:
+            if os.path.isfile(init_file):
+                try:
+                    with open(init_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    self.restore_state(data)
+                    self.undo_stack.clear()
+                    self.redo_stack.clear()
+                    self.save_state()
+                    self.current_file = init_file
+                    self.unsaved_changes = False
+                except Exception as e:
+                    messagebox.showerror("Ошибка", f"Не удалось загрузить файл при запуске:\n{e}")
+        
         self.save_state()
     
-    # --- Методы работы с таблицей ---
-    def add_column(self):
+    def show_about_info(self):
+        about_text = (
+            "Имя программы: Таблица учёта продукции\n"
+            "Автор: Павел Чуликов\n"
+            "Версия: 3.0.22\n"
+            "Дата выхода версии: 10.08.2025\n"
+            "Дата выхода первой версии: 10.07.2025\n"
+            "Контакты: P30534437@gmail.com\n"
+        )
+        messagebox.showinfo("Сведения о программе", about_text)
+    
+    def mark_changes(self, event=None):
+        self.unsaved_changes = True
+    
+    def add_column(self, init=False):
         col_index = len(self.columns)
         col_entries = []
         
-        del_col_btn = tk.Button(self.scrollable_table.header_inner, text="Удалить", fg="red",
-                                command=lambda c=col_index: self.delete_column(c))
-        del_col_btn.grid(row=0, column=col_index, padx=5, pady=2)
+        del_col_btn = ttk.Button(self.scrollable_table.header_inner, text="Удалить", width=12,
+                                 command=lambda c=col_index: self.delete_column(c))
+        del_col_btn.grid(row=0, column=col_index, padx=3, pady=3)
         
-        header = tk.Entry(self.scrollable_table.header_inner, width=12, justify='center')
+        header = ttk.Entry(self.scrollable_table.header_inner, justify='center', width=13)
         header.insert(0, f"Столбец {col_index+1}")
-        header.grid(row=1, column=col_index, padx=5, pady=2)
-        header.bind("<KeyRelease>", lambda e: self.save_state())
+        header.grid(row=1, column=col_index, padx=3, pady=3)
+        header.bind("<KeyRelease>", lambda e: [self.mark_changes(), self.save_state()])
+        self._bind_ctrl_v(header)
         
         col_entries.append(del_col_btn)
         col_entries.append(header)
         
         for row in range(self.data_rows):
-            entry = tk.Entry(self.scrollable_table.table_inner, width=12, justify='center')
-            entry.grid(row=row, column=col_index, padx=5, pady=2)
-            entry.bind("<KeyRelease>", lambda e, c=col_index: [self.update_sum(c), self.save_state()])
+            entry = ttk.Entry(self.scrollable_table.table_inner, justify='center', width=13)
+            entry.grid(row=row, column=col_index, padx=3, pady=1)
+            entry.bind("<KeyRelease>", lambda e, c=col_index: [self.update_sum(c), self.mark_changes(), self.save_state()])
+            self._bind_ctrl_v(entry)
             col_entries.append(entry)
         
-        sum_entry = tk.Entry(self.scrollable_table.table_inner, width=12, justify='center', state='readonly', readonlybackground='lightgray')
-        sum_entry.grid(row=self.data_rows, column=col_index, padx=5, pady=2)
+        sum_entry = ttk.Entry(self.scrollable_table.table_inner, justify='center', width=13, state='readonly')
+        sum_entry.grid(row=self.data_rows, column=col_index, padx=3, pady=1)
         col_entries.append(sum_entry)
         
         self.columns.append(col_entries)
-        self.update_sum(col_index)
-        self.refresh_delete_row_buttons()
-        self.save_state()
+        
+        if not init:
+            self.refresh_delete_row_buttons()
+            self.update_all_sums()
+            self.save_state()
     
     def add_row(self):
         self.data_rows += 1
@@ -181,11 +216,12 @@ class JournalApp(tk.Tk):
         for col_index, col_entries in enumerate(self.columns):
             sum_entry = col_entries[-1]
             sum_entry.grid_forget()
-            sum_entry.grid(row=self.data_rows, column=col_index, padx=5, pady=2)
+            sum_entry.grid(row=self.data_rows, column=col_index, padx=3, pady=1)
             
-            new_entry = tk.Entry(self.scrollable_table.table_inner, width=12, justify='center')
-            new_entry.grid(row=row_index, column=col_index, padx=5, pady=2)
-            new_entry.bind("<KeyRelease>", lambda e, c=col_index: [self.update_sum(c), self.save_state()])
+            new_entry = ttk.Entry(self.scrollable_table.table_inner, justify='center', width=13)
+            new_entry.grid(row=row_index, column=col_index, padx=3, pady=1)
+            new_entry.bind("<KeyRelease>", lambda e, c=col_index: [self.update_sum(c), self.mark_changes(), self.save_state()])
+            self._bind_ctrl_v(new_entry)
             col_entries.insert(-1, new_entry)
         
         self.refresh_delete_row_buttons()
@@ -210,12 +246,17 @@ class JournalApp(tk.Tk):
         
         self.refresh_delete_row_buttons()
         self.update_all_sums()
+        self.mark_changes()
         self.save_state()
     
     def delete_row(self, row_index):
         if self.data_rows <= 1:
             messagebox.showwarning("Предупреждение", "Нельзя удалить последнюю строку!")
             return
+        
+        btn_to_remove = self.del_row_buttons.pop(row_index)
+        btn_to_remove.grid_forget()
+        btn_to_remove.destroy()
         
         for col_entries in self.columns:
             entry_to_remove = col_entries[2 + row_index]
@@ -230,22 +271,40 @@ class JournalApp(tk.Tk):
                 col_entries[2 + i].grid_configure(row=i)
             col_entries[-1].grid_configure(row=self.data_rows)
         
-        self.refresh_delete_row_buttons()
+        col_for_buttons = len(self.columns)
+        for i, btn in enumerate(self.del_row_buttons):
+            btn.config(command=lambda r=i: self.delete_row(r))
+            btn.grid(row=i, column=col_for_buttons, padx=3, pady=1)
+        
+        if self.add_row_btn:
+            self.add_row_btn.grid_forget()
+            self.add_row_btn.grid(row=self.data_rows, column=col_for_buttons, padx=3, pady=6)
+        
         self.update_all_sums()
+        self.mark_changes()
         self.save_state()
     
     def refresh_delete_row_buttons(self):
-        for btn in self.del_row_buttons:
+        for btn in getattr(self, 'del_row_buttons', []):
             btn.grid_forget()
             btn.destroy()
-        self.del_row_buttons.clear()
+        if self.add_row_btn:
+            self.add_row_btn.grid_forget()
+            self.add_row_btn.destroy()
+            self.add_row_btn = None
+        
+        self.del_row_buttons = []
         
         col_for_buttons = len(self.columns)
+        
         for row in range(self.data_rows):
-            btn = tk.Button(self.scrollable_table.table_inner, text="Удалить", fg="red",
-                            command=lambda r=row: self.delete_row(r))
-            btn.grid(row=row, column=col_for_buttons, padx=5, pady=2)
+            btn = ttk.Button(self.scrollable_table.table_inner, text="Удалить строку", width=16)
+            btn.grid(row=row, column=col_for_buttons, padx=3, pady=1)
+            btn.config(command=lambda r=row: self.delete_row(r))
             self.del_row_buttons.append(btn)
+        
+        self.add_row_btn = ttk.Button(self.scrollable_table.table_inner, text="Добавить строку", width=16, command=self.add_row)
+        self.add_row_btn.grid(row=self.data_rows, column=col_for_buttons, padx=3, pady=6)
     
     def update_sum(self, col_index):
         col_entries = self.columns[col_index]
@@ -267,7 +326,6 @@ class JournalApp(tk.Tk):
         for i in range(len(self.columns)):
             self.update_sum(i)
     
-    # --- Undo/Redo ---
     def save_state(self):
         state = {
             "data_rows": self.data_rows,
@@ -319,7 +377,6 @@ class JournalApp(tk.Tk):
     
     def undo_action(self):
         if len(self.undo_stack) < 2:
-            messagebox.showinfo("Отмена", "Отменять нечего.")
             return
         current_state = self.undo_stack.pop()
         self.redo_stack.append(current_state)
@@ -328,13 +385,11 @@ class JournalApp(tk.Tk):
     
     def redo_action(self):
         if not self.redo_stack:
-            messagebox.showinfo("Повтор", "Повторять нечего.")
             return
         state = self.redo_stack.pop()
         self.undo_stack.append(state)
         self.restore_state(copy.deepcopy(state))
     
-    # --- Сохранение/загрузка ---
     def prepare_save_data(self):
         data = {
             "data_rows": self.data_rows,
@@ -358,7 +413,7 @@ class JournalApp(tk.Tk):
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
             self.current_file = filepath
-            messagebox.showinfo("Сохранение", "Данные успешно сохранены.")
+            self.unsaved_changes = False
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{e}")
     
@@ -370,7 +425,7 @@ class JournalApp(tk.Tk):
             data = self.prepare_save_data()
             with open(self.current_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
-            messagebox.showinfo("Быстрое сохранение", f"Изменения сохранены в:\n{self.current_file}")
+            self.unsaved_changes = False
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{e}")
     
@@ -382,17 +437,61 @@ class JournalApp(tk.Tk):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            self.restore_state(data)
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            self.save_state()
+            self.current_file = filepath
+            self.unsaved_changes = False
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось загрузить файл:\n{e}")
+            messagebox.showerror("Ошибка", f"Не удалось открыть файл:\n{e}")
+    
+    def import_columns_from_directory(self):
+        directory = filedialog.askdirectory()
+        if not directory:
             return
-        
-        self.restore_state(data)
-        self.undo_stack.clear()
-        self.redo_stack.clear()
-        self.save_state()
-        self.current_file = filepath
-        messagebox.showinfo("Загрузка", "Данные успешно загружены.")
+        try:
+            files = os.listdir(directory)
+            files = [f for f in files if os.path.isfile(os.path.join(directory, f))]
+            if not files:
+                messagebox.showinfo("Импорт из директории", "В выбранной директории нет файлов.")
+                return
+            
+            for file_name in files:
+                self.add_column()
+                col_index = len(self.columns) - 1
+                self.columns[col_index][1].delete(0, tk.END)
+                self.columns[col_index][1].insert(0, file_name)
+            
+            self.mark_changes()
+            self.save_state()
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось импортировать из директории:\n{e}")
+    
+    def on_close(self):
+        if self.unsaved_changes:
+            answer = messagebox.askyesnocancel("Сохранение",
+                        "У вас есть несохранённые изменения. Хотите сохранить перед выходом?")
+            if answer is True:
+                self.quick_save()
+                self.destroy()
+            elif answer is False:
+                self.destroy()
+        else:
+            self.destroy()
+    
+    def _bind_ctrl_v(self, entry_widget):
+        def on_paste(event):
+            event.widget.event_generate("<<Paste>>")
+            return "break"
+        entry_widget.bind("<Control-v>", on_paste)
+        entry_widget.bind("<Control-V>", on_paste)
 
 if __name__ == "__main__":
-    app = JournalApp()
+    init_file = None
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if os.path.isfile(arg) and arg.lower().endswith(".json"):
+            init_file = arg
+    app = JournalApp(init_file=init_file)
     app.mainloop()
